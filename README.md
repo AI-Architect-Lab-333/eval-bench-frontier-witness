@@ -230,6 +230,16 @@ What does not:
 
 And the real discriminator surfaced by accident and deserves to be measured on purpose: **how many tokens a model burns before giving up** — silence rate, budget consumed, rescue rate. That is a different instrument, and a different guide.
 
+### What happened when the cases were made harder
+
+That work was done, and the result is worth stating here rather than leaving this section on a call to action.
+
+Four hard cases were added, the lenient checks anchored, the witness revalidated to 36/36, and both local models re-measured. The separation improved — failures went from 0 / 1 / 3 to 0 / 3 / 5, and `long-horizon` opened into a 22-point gap between the two local models. The hard cases work.
+
+**And the bench is still saturated on correctness: 108 model-case pairs, zero wrong answers, eight refusals.** Four times harder changed the spread, not the kind of failure. On this material these models do not answer incorrectly; they stop.
+
+The method for detecting that state, writing cases that set a real trap, and measuring refusal as a first-class number is the companion guide: **[bench saturation and measuring refusal](https://github.com/AI-Architect-Lab-333/bench-saturation-refusal)**. It also carries six pitfalls of its own, including a case whose prompt contradicted its own expected answer — which the witness caught, and was right to.
+
 ### Pitfall #11 — a truncated answer scored as a wrong answer
 
 Adding harder cases exposed a blind spot the first thirty-two never hit. A case demanding a full causal chain hit the token ceiling: 2500 tokens produced, the text stopping mid-sentence on `the ssh shell (which contained`. The model never reached the part a check required, and the case was scored as a miss.

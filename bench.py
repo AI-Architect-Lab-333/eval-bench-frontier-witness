@@ -843,9 +843,29 @@ def cmd_compare(args):
     print("-" * (id_width + width * len(tags)))
     if not disagreed:
         print("none -- every case is passed, or failed, by all of them alike")
-    for case_id, verdicts in disagreed:
-        cells = ["PASS" if v else ("FAIL" if v is False else "-") for v in verdicts]
+    # Show WHY a case failed, not just that it did. A bare FAIL invites the
+    # reader to supply the reason, and the plausible reason is usually "it got
+    # it wrong" -- which on this bench is almost never what happened. Reported
+    # as a wrong answer once here, from this very table, before anyone checked
+    # the record that said `empty: true` all along.
+    def verdict_of(index, case_id):
+        record = indexes[index].get(case_id)
+        if record is None:
+            return "-"
+        if record.get("passed"):
+            return "PASS"
+        if record.get("empty"):
+            return "SILENT"
+        if record.get("truncated"):
+            return "CUT"
+        return "WRONG"
+
+    for case_id, _ in disagreed:
+        cells = [verdict_of(i, case_id) for i in range(len(indexes))]
         print("%-*s%s" % (id_width, case_id, "".join(c.rjust(width) for c in cells)))
+    if disagreed:
+        print("\nPASS / WRONG (answered, incorrect) / SILENT (no visible content) "
+              "/ CUT (hit the budget)")
     return 0
 
 
