@@ -194,7 +194,19 @@ With the instrument calibrated, the measurement took a day and produced a result
 
 > The 78 GiB and the aggressive quantization do not buy correctness. They buy **the propensity to answer at all.**
 
-Local B went silent on 7 of 32 cases (4 rescued by the automatic retry, 3 terminal); local A on one. Re-run end to end, both models produced **0 divergent cases out of 32**, and local A's 32 answers were **byte-identical** between passes. At temperature 0 with a fixed seed the bench is deterministic: the silences are a stable property of the model-case pair, not a lottery, so a two-case gap is real rather than noise.
+Local B went silent on 7 of 32 cases (4 rescued by the automatic retry, 3 terminal); local A on one. Re-run end to end, **both local models produced 0 divergent cases out of 32**, and local A's 32 answers were **byte-identical** between passes. On a local `llama.cpp` server at temperature 0 with a fixed seed, the bench is reproducible: the silences are a stable property of the model-case pair, not a lottery, so a two-case gap between two local models is real rather than noise.
+
+### The witness is not reproducible, and that changes the method
+
+**Do not extend that conclusion to a hosted frontier model.** Re-running the same witness pass against the same provider, same model id, same temperature 0, same seed, **25 of 36 answers came back different.** Not paraphrases of the same reasoning either — one run explained a failed allocation through reclaimable page cache, the next through a pinned/reserved memory pool. Both correct, one of them outside what the check anticipated.
+
+The consequence is uncomfortable and worth stating plainly:
+
+> A case that **passes** a single witness pass is not proven sound. It may have passed because that run happened to phrase the answer the way the check expected.
+
+A failure is still the strong signal — it points at a defective case, and that is what the method is built on. But a pass is weaker evidence than it looks. Treat a single-pass validation as **provisional**, and re-run the witness before trusting a case set you are about to measure models against. The rescoring machinery makes this cheap in tokens but not free: it is a second paid pass.
+
+This was found by accident, on the run that added four new cases: one of them passed the first pass and failed the second, with a different — and equally correct — explanation.
 
 ### The last thing the validated bench reported was a verdict on itself
 
@@ -217,6 +229,30 @@ What does not:
 - **This bench cannot rank mid-size models against each other.** Adding a fourth candidate would produce five categories at 100% and a verdict decided by silences. Harder cases first, more models second — and a bench you re-run quarterly needs that work before the next run, or it will answer "100% everywhere" to every serious model.
 
 And the real discriminator surfaced by accident and deserves to be measured on purpose: **how many tokens a model burns before giving up** — silence rate, budget consumed, rescue rate. That is a different instrument, and a different guide.
+
+### Pitfall #11 — a truncated answer scored as a wrong answer
+
+Adding harder cases exposed a blind spot the first thirty-two never hit. A case demanding a full causal chain hit the token ceiling: 2500 tokens produced, the text stopping mid-sentence on `the ssh shell (which contained`. The model never reached the part a check required, and the case was scored as a miss.
+
+The automatic retry of pitfall #1 did not fire, because it only watches for an answer that is **empty**. A truncated answer is not empty — it is a budget problem wearing the costume of a wrong answer, and it fails silently, which is worse than failing loudly.
+
+Fix: read `finish_reason` from the stream, fall back to "output tokens hit the ceiling exactly" when a provider omits it, and retry at a larger budget exactly as for an empty answer. The record carries `truncated` so it never has to be rediscovered by reading raw text.
+
+```
+[33/36] lh-08-pkill-cascade  truncated, retrying at 7500 tokens ... PASS 3/3
+```
+
+### Pitfall #12 — `lui‑même` does not match `lui-même`
+
+The corrected case still failed, on a check requiring a reflexive construction. The model had written it — `le shell lui‑même` — and the check refused it.
+
+The hyphen is **U+2011, NON-BREAKING HYPHEN**. Pixel-identical to ASCII `-`, a different character entirely. `normalize()` already folded en dash, em dash and minus sign; not this one.
+
+This is pitfall #3 — the typographic apostrophe — in a second costume, and it is worth generalizing rather than patching: **any character a word processor or a model might "improve" is a candidate.** U+2010, U+2011, U+2012 and U+2043 now fold to ASCII alongside the dashes.
+
+Scope, measured after the fix: **7 of 36 answers** in one witness pass contained one of these. None had changed a verdict — by luck of phrasing alone.
+
+> One detail worth its own line: **only the frontier produced them.** Both local models wrote plain ASCII. A check validated against local models can therefore fail against the witness — the reverse of the bias this method usually guards against.
 
 ## 7. Running it unattended
 
@@ -279,7 +315,9 @@ python bench.py compare "results/witness-*.json" "results/local-a-*.json"
 
 ✅ **Expected**: `0 unpassable, 0 toothless, 0 vacuous`; `0 porous`; `all verdicts correct`; and a witness column at or very near 100%.
 
-❌ **A witness below ~95%** means the bench is wrong, not the model. Read the answers it produced for the failing cases before changing anything, and fix the **check**, never the prompt — a modified prompt invalidates `rescore`, because the stored answers then answer a different question.
+❌ **A witness below ~95%** means the bench is wrong, not the model. Read the answers it produced for the failing cases before changing anything, and fix the **check**, never the prompt — a modified prompt invalidates `rescore`, because the stored answers then answer a different question. When a prompt is genuinely defective and has to change, that case's stored answer is dead: re-run that case alone rather than carrying a result that answers a question you no longer ask.
+
+⚠️ **A 100% witness on one pass is provisional.** The hosted witness is not reproducible (section 6), so a pass may reflect a phrasing the check happened to anticipate. Before committing a case set to a measurement campaign, run the witness twice and rescore both. A case that passes once and fails once is a case whose check is too narrow, not a model that got worse.
 
 For every case the witness fails, the discipline is:
 
@@ -291,7 +329,7 @@ For every case the witness fails, the discipline is:
 
 That last point is not bookkeeping. Corrections made *after seeing the measured model's answers* are a different epistemic act from corrections made after the witness's, and that is the path by which a bench ends up flattering the thing it is supposed to judge. Recording the order of operations is what keeps the number usable.
 
-## 10. The ten pitfalls, in one table
+## 10. The twelve pitfalls, in one table
 
 | # | Symptom | Cause | Fix |
 |---|---|---|---|
@@ -305,13 +343,15 @@ That last point is not bookkeeping. Corrections made *after seeing the measured 
 | 8 | a check accepts a wrong answer, invisible for three passes | checks are only inspected where a model *fails*, so leniency is never audited | cross-validation with `audit-leniency.py`, then a hand-written wrong-but-plausible answer per porous case |
 | 9 | a server survives the `pkill` meant to stop it; 160 systemd restarts follow | `pkill -f` matched the remote shell's own command line and killed it first | kill by PID, or match a pattern the command does not contain |
 | 10 | a result file named for model A holds model B's answers | an HTTP 200 does not say which model answered | require the served alias to match before measuring; abort otherwise |
+| 11 | an answer stops mid-sentence and is scored as wrong | the token ceiling was hit; the empty-answer retry does not watch for truncation | read `finish_reason`, fall back to "tokens hit the ceiling", retry at a larger budget |
+| 12 | `le shell lui‑même` fails a check for `lui-même` | U+2011 NON-BREAKING HYPHEN, pixel-identical to ASCII `-` | fold U+2010‑U+2012 and U+2043 to `-` in `normalize()`, with the dashes |
 
 ## Known limitations
 
 - **The case set used here is saturated on correctness** (section 6). Three models produced zero wrong answers across 96 pairs, so these 32 cases cannot rank comparable models against each other — only a validated bench could have told me that, but it is a real ceiling on what the numbers above can be asked to settle. The method transfers; this particular case set needs harder cases before it is re-run.
 - **No measurement of prose.** Elegance, tone, concision are out of reach of deterministic checks, by design. This bench says whether a model is wrong, not whether it writes well.
 - **Resolution is about 3 points per case** on 32 pass/fail cases. It spots a per-category drop; it does not separate two close models on the overall score. A gap of one or two cases needs a repeat run before it means anything.
-- **Reproducibility was verified within a single loaded server instance**, never across a model reload. Both re-runs queried the same process.
+- **Reproducibility holds for the local models, not for the witness.** The two local re-runs were byte-identical, but they queried a single loaded server instance and were never re-run across a model reload. The hosted witness is a different story entirely: 25 of 36 answers changed between two identical requests (section 6). Any conclusion that rests on a single witness pass is provisional.
 - **The throughput metric is wrong** (section 8) and its fix is not implemented. TTFT is sound.
 - **`started_utc` and the filename timestamp are written when the report is saved**, i.e. at the *end* of the run. A field named "started" holding the finish time — harmless for scores, misleading when correlating a run against a system log.
 - **One provider shape was used for the witness**: an OpenAI-compatible `/v1/chat/completions` endpoint. A native API with a different route needs a different client.

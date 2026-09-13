@@ -95,6 +95,7 @@ def _attempt(url, payload, timeout, api_key):
     chunks = []
     deltas = 0
     usage = {}
+    finish = None
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -112,6 +113,11 @@ def _attempt(url, payload, timeout, api_key):
                 if event.get("usage"):
                     usage = event["usage"]
                 for choice in event.get("choices") or []:
+                    # Why the model stopped matters as much as what it said. A
+                    # "length" stop is a truncated answer, not a wrong one, and
+                    # scoring it as wrong punishes the model for the budget.
+                    if choice.get("finish_reason"):
+                        finish = choice["finish_reason"]
                     piece = (choice.get("delta") or {}).get("content")
                     if piece:
                         if ttft is None:
@@ -137,6 +143,12 @@ def _attempt(url, payload, timeout, api_key):
         "output_tokens": out_tokens,
         "tokens_per_s": round(out_tokens / decode_window, 1) if out_tokens else None,
         "token_source": "usage" if usage.get("completion_tokens") else "delta-count",
+        "finish_reason": finish,
+        # Some providers omit finish_reason on a stream. Hitting the budget
+        # exactly is the fallback signal, and it is right far more often than
+        # a model that happens to stop on the last allowed token.
+        "truncated": finish == "length" or (
+            finish is None and out_tokens and out_tokens >= max_tokens),
     }
 
 
@@ -152,7 +164,12 @@ FENCE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 PUNCT = {
     "’": "'", "‘": "'", "‛": "'", "ʼ": "'",
     "“": '"', "”": '"', "„": '"',
-    "–": "-", "—": "-", "−": "-",
+    # Dashes and hyphens. U+2011 is the nasty one: a NON-BREAKING HYPHEN is
+    # pixel-identical to the ASCII "-", and a model writing "lui‑même" with it
+    # silently fails every check typed with a plain hyphen. Same family as the
+    # typographic apostrophe, found the same way -- by a check that refused a
+    # correct answer for no visible reason.
+    "–": "-", "—": "-", "−": "-", "‐": "-", "‑": "-", "‒": "-", "⁃": "-",
     " ": " ", " ": " ", " ": " ",
     "…": "...",
 }
@@ -480,17 +497,33 @@ def cmd_run(args):
         # nothing. That is a budget problem, not an answer, so give it one
         # bigger envelope before recording a miss.
         retried = False
-        if not result["text"].strip():
+        wasted = 0
+        # Two ways the budget can masquerade as a quality signal: nothing came
+        # back at all, or the answer stops mid-sentence because it ran out of
+        # room. Both are budget problems and both used to be scored as wrong
+        # answers -- the second one silently, which is worse.
+        if not result["text"].strip() or result.get("truncated"):
+            why = "empty" if not result["text"].strip() else "truncated"
             budget = case.get("max_tokens", args.max_tokens) * 3
-            print("empty, retrying at %d tokens ... " % budget, end="", flush=True)
+            print("%s, retrying at %d tokens ... " % (why, budget),
+                  end="", flush=True)
+            # Whatever happens next, the first attempt is spent. Count it here:
+            # if the retry also comes back empty, `result` is still the first
+            # attempt and its token count alone would hide the retry entirely.
+            wasted = result["output_tokens"] or 0
             bigger = call_model(
                 args.url, args.model, build_messages(case), budget,
                 case.get("temperature", args.temperature),
                 args.seed, args.timeout, api_key,
             )
+            if "error" not in bigger:
+                wasted += bigger["output_tokens"] or 0
             if "error" not in bigger and bigger["text"].strip():
                 result = bigger
                 retried = True
+                # The retry produced the answer, so its tokens are not waste --
+                # only the first attempt was burned for nothing.
+                wasted -= bigger["output_tokens"] or 0
 
         # An empty completion is not a wrong answer, it is a missing one -- and
         # it must never score. `max_words: 1` is satisfied by zero words, so
@@ -502,6 +535,8 @@ def cmd_run(args):
                 "id": case["id"], "category": case.get("category"),
                 "passed": False, "score": 0.0, "empty": True,
                 "output_tokens": result["output_tokens"],
+                "tokens_burned": wasted or result["output_tokens"] or 0,
+                "retry_attempted": wasted > (result["output_tokens"] or 0),
                 "ttft_s": result["ttft_s"], "total_s": result["total_s"],
                 "answer": "",
                 "note": "empty completion -- a reasoning model probably spent the "
@@ -529,6 +564,11 @@ def cmd_run(args):
             "output_tokens": result["output_tokens"],
             "tokens_per_s": result["tokens_per_s"],
             "retried_with_bigger_budget": retried,
+            "tokens_wasted_before_retry": wasted if retried else 0,
+            # Still truncated after the bigger budget: the score below counts
+            # against an answer the model was not allowed to finish. Recorded
+            # so that never has to be rediscovered by reading the raw text.
+            "truncated": bool(result.get("truncated")),
             "answer": result["text"],
         })
 
@@ -582,7 +622,10 @@ def summarize(records):
     for rec in records:
         cat = rec.get("category") or "-"
         slot = by_category.setdefault(cat, {"n": 0, "passed": 0, "scores": [],
-                                            "tps": [], "ttft": []})
+                                            "tps": [], "ttft": [],
+                                            "silent": 0, "burned": 0,
+                                            "burned_partial": False,
+                                            "rescued": 0})
         slot["n"] += 1
         slot["passed"] += 1 if rec.get("passed") else 0
         if rec.get("score") is not None:
@@ -591,6 +634,23 @@ def summarize(records):
             slot["tps"].append(rec["tokens_per_s"])
         if rec.get("ttft_s"):
             slot["ttft"].append(rec["ttft_s"])
+        # Silence accounting. Across three models this turned out to be the
+        # only thing separating them -- not one wrong answer in 96 pairs, but
+        # four cases where nothing came back. A property that decides the
+        # verdict has no business being read off the console by hand.
+        if rec.get("empty"):
+            slot["silent"] += 1
+            # `tokens_burned` covers both attempts when a retry also came back
+            # empty. Result files written before that field existed only have
+            # the first attempt, so the total is a LOWER BOUND for them -- and
+            # says so, rather than passing an undercount off as a measurement.
+            if rec.get("tokens_burned") is None:
+                slot["burned_partial"] = True
+            slot["burned"] += (rec.get("tokens_burned")
+                               or rec.get("output_tokens") or 0)
+        if rec.get("retried_with_bigger_budget"):
+            slot["rescued"] += 1
+            slot["burned"] += rec.get("tokens_wasted_before_retry") or 0
 
     out = {}
     for cat, slot in sorted(by_category.items()):
@@ -601,12 +661,20 @@ def summarize(records):
             "mean_score": round(statistics.fmean(slot["scores"]), 3) if slot["scores"] else None,
             "median_tokens_per_s": round(statistics.median(slot["tps"]), 1) if slot["tps"] else None,
             "median_ttft_s": round(statistics.median(slot["ttft"]), 2) if slot["ttft"] else None,
+            "silent": slot["silent"],
+            "silence_rate": round(slot["silent"] / slot["n"], 3),
+            "tokens_burned_silent": slot["burned"],
+            "tokens_burned_is_lower_bound": slot["burned_partial"],
+            "rescued": slot["rescued"],
         }
 
     total_n = sum(s["n"] for s in out.values())
     total_pass = sum(s["passed"] for s in out.values())
     all_tps = [r["tokens_per_s"] for r in records if r.get("tokens_per_s")]
     all_scores = [r["score"] for r in records if r.get("score") is not None]
+    total_silent = sum(s["silent"] for s in out.values())
+    total_burned = sum(s["tokens_burned_silent"] for s in out.values())
+    total_rescued = sum(s["rescued"] for s in out.values())
     out["ALL"] = {
         "n": total_n,
         "passed": total_pass,
@@ -614,6 +682,14 @@ def summarize(records):
         "mean_score": round(statistics.fmean(all_scores), 3) if all_scores else None,
         "median_tokens_per_s": round(statistics.median(all_tps), 1) if all_tps else None,
         "median_ttft_s": None,
+        "silent": total_silent,
+        "silence_rate": round(total_silent / total_n, 3) if total_n else None,
+        "tokens_burned_silent": total_burned,
+        # Aggregate the caveat too. Computing it per category and forgetting it
+        # here meant the warning existed in the data and never reached a human.
+        "tokens_burned_is_lower_bound": any(
+            s.get("tokens_burned_is_lower_bound") for s in out.values()),
+        "rescued": total_rescued,
     }
     return out
 
@@ -636,6 +712,34 @@ def print_summary(summary, tag):
     print("%-18s %4d %7d %9.0f%% %11s %9s" % (
         "ALL", all_slot["n"], all_slot["passed"], all_slot["pass_rate"] * 100,
         all_slot["mean_score"], all_slot["median_tokens_per_s"]))
+
+    # Silence is reported separately because it is not a wrong answer and must
+    # not be read as one. On this bench it was the only thing that separated
+    # three models: zero wrong answers in 96 pairs, four silences.
+    silent = all_slot.get("silent") or 0
+    rescued = all_slot.get("rescued") or 0
+    burned = all_slot.get("tokens_burned_silent") or 0
+    if silent or rescued:
+        print("\n%-18s %s" % ("silence", "(a spent budget with nothing to show)"))
+        print("-" * 74)
+        print("%-18s %4d case(s), %.0f%% of the bench"
+              % ("never answered", silent, (all_slot.get("silence_rate") or 0) * 100))
+        print("%-18s %4d case(s) answered only after a 3x budget"
+              % ("rescued", rescued))
+        # A result file written before `tokens_burned` existed only recorded
+        # the first attempt, so the retry that also came back empty is missing
+        # from the total. Say "at least" rather than pass an undercount off as
+        # a measurement -- the whole point of this bench is not doing that.
+        partial = all_slot.get("tokens_burned_is_lower_bound")
+        print("%-18s %s%d token(s) produced, none of it visible%s"
+              % ("burned", "at least " if partial else "", burned,
+                 "" if not partial else
+                 "\n%-18s (lower bound: this file predates per-retry accounting)"
+                 % ""))
+        for cat, slot in summary.items():
+            if cat != "ALL" and (slot.get("silent") or slot.get("rescued")):
+                print("%-18s   %s: %d silent, %d rescued"
+                      % ("", cat, slot.get("silent") or 0, slot.get("rescued") or 0))
 
 
 # --------------------------------------------------------------------------
@@ -731,7 +835,7 @@ def cmd_compare(args):
         if len(set(verdicts)) > 1:
             disagreed.append((case_id, verdicts))
 
-    # Case ids run past 18 characters ("lh-02-rule-with-exception"), and a
+    # Case ids run past 18 characters ("lh-07-checklist-publication"), and a
     # truncated id is useless: it is the handle you feed back to `diff --show`.
     id_width = max(18, max(len(c) for c in all_ids) + 2)
     print("\ncases where the models disagree (%d of %d)"
