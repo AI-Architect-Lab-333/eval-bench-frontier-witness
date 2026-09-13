@@ -196,9 +196,27 @@ With the instrument calibrated, the measurement took a day and produced a result
 
 Local B went silent on 7 of 32 cases (4 rescued by the automatic retry, 3 terminal); local A on one. Re-run end to end, both models produced **0 divergent cases out of 32**, and local A's 32 answers were **byte-identical** between passes. At temperature 0 with a fixed seed the bench is deterministic: the silences are a stable property of the model-case pair, not a lottery, so a two-case gap is real rather than noise.
 
-**And the bench is now saturated on correctness.** Zero wrong answers across 96 measurements means these cases are too easy for these models. Practical consequence: **this bench cannot rank mid-size models against each other.** Adding a fourth candidate would produce five categories at 100% and a verdict decided by silences. Harder cases first, more models second.
+### The last thing the validated bench reported was a verdict on itself
 
-The real discriminator surfaced by accident and deserves to be measured on purpose: **how many tokens a model burns before giving up** — silence rate, budget consumed, rescue rate.
+Zero wrong answers across 96 measurements means one thing: **this case set is too easy for these models.** It is saturated on correctness.
+
+That is a finding, not a failure — and it is worth being precise about why, because the two are easy to confuse.
+
+**Only a calibrated instrument can report that its sample is too easy.** Before the corrections, these same models failed seven cases between them. That looked exactly like a discriminating bench. It was not: the failures were my broken checks, and they were *masking* the saturation. An uncalibrated bench does not tell you your cases are weak — it hands you plausible differences that are really its own defects. The diagnosis below exists **because** of the method, not in spite of it.
+
+So the limitation is in the **case set**, which is mine and replaceable, not in the **method**, which did its job to the end: it validated the instrument, measured with it, and then told me what the instrument cannot do.
+
+What remains valid:
+
+- **The per-category signal.** `long-horizon` at 86% and 71% against a 100% witness is a real, actionable gap — it says which work stays local and which escalates.
+- **The reproducibility.** Zero divergent cases on a full re-run is a property of the bench, not of the case difficulty.
+- **The silence finding**, which no amount of harder cases would have produced differently.
+
+What does not:
+
+- **This bench cannot rank mid-size models against each other.** Adding a fourth candidate would produce five categories at 100% and a verdict decided by silences. Harder cases first, more models second — and a bench you re-run quarterly needs that work before the next run, or it will answer "100% everywhere" to every serious model.
+
+And the real discriminator surfaced by accident and deserves to be measured on purpose: **how many tokens a model burns before giving up** — silence rate, budget consumed, rescue rate. That is a different instrument, and a different guide.
 
 ## 7. Running it unattended
 
@@ -290,6 +308,7 @@ That last point is not bookkeeping. Corrections made *after seeing the measured 
 
 ## Known limitations
 
+- **The case set used here is saturated on correctness** (section 6). Three models produced zero wrong answers across 96 pairs, so these 32 cases cannot rank comparable models against each other — only a validated bench could have told me that, but it is a real ceiling on what the numbers above can be asked to settle. The method transfers; this particular case set needs harder cases before it is re-run.
 - **No measurement of prose.** Elegance, tone, concision are out of reach of deterministic checks, by design. This bench says whether a model is wrong, not whether it writes well.
 - **Resolution is about 3 points per case** on 32 pass/fail cases. It spots a per-category drop; it does not separate two close models on the overall score. A gap of one or two cases needs a repeat run before it means anything.
 - **Reproducibility was verified within a single loaded server instance**, never across a model reload. Both re-runs queried the same process.
