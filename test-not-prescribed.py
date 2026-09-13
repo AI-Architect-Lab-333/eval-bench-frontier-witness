@@ -78,11 +78,11 @@ def main():
         wrong += 1 if ok else 0
         print("%s must fail | %s" % ("OK  " if not ok else "WRONG", text[:64]))
 
-    answer = stored_answer("lh-07-checklist-publication")
+    answer = stored_answer("lh-02-rule-with-exception")
     if answer:
         ok, _ = run_check(answer, CHECK)
         wrong += 0 if ok else 1
-        print("%s must pass | stored DeepSeek answer (lh-07)"
+        print("%s must pass | stored local answer"
               % ("OK  " if ok else "WRONG"))
     else:
         print("---- skipped: no stored local result to read")

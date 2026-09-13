@@ -10,10 +10,10 @@ Two things are measured on every case:
 
 Usage
   python bench.py run  --url http://100.x.y.z:8000/v1 \
-                       --model deepseek-v4-flash --tag local-a
+                       --model <local-model-alias> --tag local-a
   python bench.py run  --url http://100.x.y.z:8001/v1 \
-                       --model qwen3-vl --tag qwen3vl-8b-q8 --category long-horizon
-  python bench.py diff results/local-a-*.json results/qwen3vl-8b-q8-*.json
+                       --model <second-model-alias> --tag local-b --category long-horizon
+  python bench.py diff results/local-a-*.json results/local-b-*.json
 
 Exit status is 0 unless the run itself failed (transport errors on every case).
 A low score is a result, not an error.
@@ -731,7 +731,7 @@ def cmd_compare(args):
         if len(set(verdicts)) > 1:
             disagreed.append((case_id, verdicts))
 
-    # Case ids run past 18 characters ("lh-07-checklist-publication"), and a
+    # Case ids run past 18 characters ("lh-02-rule-with-exception"), and a
     # truncated id is useless: it is the handle you feed back to `diff --show`.
     id_width = max(18, max(len(c) for c in all_ids) + 2)
     print("\ncases where the models disagree (%d of %d)"
@@ -822,7 +822,7 @@ def main():
 
     run = sub.add_parser("run", help="run the bench against one endpoint")
     run.add_argument("--url", default="http://100.x.y.z:8000/v1")
-    run.add_argument("--model", default="deepseek-v4-flash")
+    run.add_argument("--model", default="<local-model-alias>")
     run.add_argument("--tag", required=True,
                      help="short name for this configuration, used in the filename")
     run.add_argument("--cases", default=DEFAULT_CASES)

@@ -273,6 +273,21 @@ For every case the witness fails, the discipline is:
 
 That last point is not bookkeeping. Corrections made *after seeing the measured model's answers* are a different epistemic act from corrections made after the witness's, and that is the path by which a bench ends up flattering the thing it is supposed to judge. Recording the order of operations is what keeps the number usable.
 
+## 10. The ten pitfalls, in one table
+
+| # | Symptom | Cause | Fix |
+|---|---|---|---|
+| 1 | `EMPTY  40 tokens spent, no visible content` | `max_tokens` used as a length constraint; a reasoning model spends it all on hidden reasoning | length limits move into the checks; generous default; automatic retry at 3× on an empty answer |
+| 2 | a case scores `PASS` on an answer that does not exist | `max_words: 1` is satisfied by zero words | reject empty answers before any check; `selftest.py` refuses cases an empty answer would validate |
+| 3 | a correct French answer fails a substring check | typographic apostrophe U+2019 vs ASCII `'` | normalize Unicode punctuation on both sides |
+| 4 | right JSON object scored zero | parser required the whole answer to parse | extract the first valid JSON value; enforce "JSON only" with a length bound |
+| 5 | `od \| awk` fails a check demanding `tr -d` | the check encoded the author's implementation, not the requirement | accept the family of valid tools; ask explicitly for what you intend to check |
+| 6 | ``la lettre `r` `` fails a search for `lettre r` | markdown backticks break literal matching | strip backticks and emphasis markers in `normalize()` |
+| 7 | "rebase, without using `--force`" fails a `--force` ban | fixed-width lookbehind sees only the characters glued to the term | `not_prescribed` check: walk back over the current clause for a negation |
+| 8 | a check accepts a wrong answer, invisible for three passes | checks are only inspected where a model *fails*, so leniency is never audited | cross-validation with `audit-leniency.py`, then a hand-written wrong-but-plausible answer per porous case |
+| 9 | a server survives the `pkill` meant to stop it; 160 systemd restarts follow | `pkill -f` matched the remote shell's own command line and killed it first | kill by PID, or match a pattern the command does not contain |
+| 10 | a result file named for model A holds model B's answers | an HTTP 200 does not say which model answered | require the served alias to match before measuring; abort otherwise |
+
 ## Known limitations
 
 - **No measurement of prose.** Elegance, tone, concision are out of reach of deterministic checks, by design. This bench says whether a model is wrong, not whether it writes well.
