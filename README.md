@@ -40,11 +40,11 @@ The frontier model has **two roles, and the first matters more than the second**
 Check types: `contains`, `not_contains`, `any_of`, `all_of`, `regex`, `not_regex`, `not_prescribed`, `valid_json`, `json_field`, `starts_with`, `max_words`, `max_chars`, `max_sentences`.
 
 ```bash
-python bench.py run --url http://100.x.y.z:8000/v1 --model <alias> --tag local-a --warmup
+python bench.py run --url http://100.x.y.z:8000/v1 --model <alias> --tag <local-tag> --warmup
 export BENCH_API_KEY="..."          # PowerShell: $env:BENCH_API_KEY = "..."
 python bench.py run --url https://<provider>/api/v1 --model <frontier-id> \
-                    --tag witness --api-key-env BENCH_API_KEY
-python bench.py compare "results/witness-*.json" "results/local-a-*.json"
+                    --tag <witness-tag> --api-key-env BENCH_API_KEY
+python bench.py compare "results/<witness-tag>-*.json" "results/<local-tag>-*.json"
 ```
 
 `--warmup` sends one throwaway request first: the first request after a model loads is always slow and would skew the median.
@@ -154,7 +154,7 @@ Checks are inspected only where a model **fails**. So every correction can only 
 The objective half of the audit is **cross-validation**: submit every stored answer to every *other* case's checks. A case whose checks accept an unrelated answer is not measuring what it claims.
 
 ```bash
-python audit-leniency.py "results/local-a-*.json"
+python audit-leniency.py "results/<local-tag>-*.json"
 ```
 
 First run: **5 porous cases out of 32**. Porosity is only a signal; the verdict comes from the next step — write a **wrong but plausible** answer for each and see whether it passes. All five accepted it:
@@ -179,7 +179,7 @@ Fixes, and a new `max_sentences` check type. This direction is safe by construct
 
 With the instrument calibrated, the measurement took a day and produced a result worth more than the ranking it was meant to produce.
 
-| category | witness | local A — 102 GiB, 3-bit quant | local B — 23.6 GiB, 6-bit quant |
+| category | GPT-5.2 (witness) | DeepSeek-V4-Flash-0731 `UD-IQ3_XXS`, 102 GiB | Qwen3.8-27B `UD-Q6_K_XL`, 23.6 GiB |
 |---|---|---|---|
 | code | 100% | 100% | 80% |
 | extraction | 100% | 100% | 100% |
@@ -194,7 +194,7 @@ With the instrument calibrated, the measurement took a day and produced a result
 
 > The 78 GiB and the aggressive quantization do not buy correctness. They buy **the propensity to answer at all.**
 
-Local B went silent on 7 of 32 cases (4 rescued by the automatic retry, 3 terminal); local A on one. Re-run end to end, **both local models produced 0 divergent cases out of 32**, and local A's 32 answers were **byte-identical** between passes. On a local `llama.cpp` server at temperature 0 with a fixed seed, the bench is reproducible: the silences are a stable property of the model-case pair, not a lottery, so a two-case gap between two local models is real rather than noise.
+The 27B went silent on 7 of 32 cases (4 rescued by the automatic retry, 3 terminal); DeepSeek on one. Re-run end to end, **both local models produced 0 divergent cases out of 32**, and DeepSeek's 32 answers were **byte-identical** between passes. On a local `llama.cpp` server at temperature 0 with a fixed seed, the bench is reproducible: the silences are a stable property of the model-case pair, not a lottery, so a two-case gap between two local models is real rather than noise.
 
 ### The witness is not reproducible, and that changes the method
 
@@ -298,10 +298,10 @@ It refused to measure, and it was right: the port answered 200 while still servi
 `tokens_per_s` is computed as `tokens ÷ (total_s − ttft_s)`. The intent was to strip prefill and measure decoding only. But when an answer arrives in a **burst** after a long wait, first and last chunk are hundredths of a second apart and the quotient explodes:
 
 ```
-local-a  crossover-case   197 tokens   window = 0.123 s   ->  1600 tok/s
+ds4-iq3xxs  crossover-case   197 tokens   window = 0.123 s   ->  1600 tok/s
 ```
 
-Physically impossible on this hardware. The window is not measuring decoding — it is measuring **a network buffer draining**. On the witness run, **24 of 32 cases** had a window under one second; the published median overstated local A's throughput by **68%** against the aggregate.
+Physically impossible on this hardware. The window is not measuring decoding — it is measuring **a network buffer draining**. On the witness run, **24 of 32 cases** had a window under one second; the published median overstated DeepSeek's throughput by **68%** against the aggregate.
 
 Untouched by this: the **quality verdict** (no check uses time) and **TTFT**, which is timed at the arrival of the first chunk with no division.
 
@@ -320,7 +320,7 @@ Run all four, in this order, before trusting any number. Each answers a differen
 python selftest.py                             # every case passable, none toothless or vacuous
 python audit-leniency.py "results/<latest>.json"   # no case accepts a foreign answer
 python test-not-prescribed.py                  # the two-way check test
-python bench.py compare "results/witness-*.json" "results/local-a-*.json"
+python bench.py compare "results/<witness-tag>-*.json" "results/<local-tag>-*.json"
 ```
 
 ✅ **Expected**: `0 unpassable, 0 toothless, 0 vacuous`; `0 porous`; `all verdicts correct`; and a witness column at or very near 100%.
@@ -369,4 +369,4 @@ That last point is not bookkeeping. Corrections made *after seeing the measured 
 - **The example cases in `cases.json` are a shape, not a bench.** They were written for this repository and have never been used to judge a model.
 
 ---
-*Guide written and verified in September 2026. Operator PC: Windows 11, Python 3.13, standard library only. Inference box: NVIDIA GB10 Grace Blackwell, 121 GiB unified memory, Ubuntu 24.04.4 LTS, CUDA 13.0 driver, llama.cpp `llama-server` b10326 (`3653e6d`). Witness: a hosted frontier model over an OpenAI-compatible endpoint. Numbers quoted — 69% → 88% → 100% on the witness, 97% and 91% on two local models, 5 porous cases out of 32, 0 after tightening, 0 divergent cases on re-run — are measured results from those runs, not estimates.*
+*Guide written and verified in September 2026. Operator PC: Windows 11, Python 3.13, standard library only. Inference box: NVIDIA GB10 Grace Blackwell, 121 GiB unified memory, Ubuntu 24.04.4 LTS, CUDA 13.0 driver, llama.cpp `llama-server` b10326 (`3653e6d`). Models: DeepSeek-V4-Flash-0731 GGUF `UD-IQ3_XXS` (~102 GiB resident) and Qwen3.8-27B GGUF `UD-Q6_K_XL` (23.6 GiB), served sequentially by llama.cpp; witness `openai/gpt-5.2` over OpenRouter. Numbers quoted — 69% → 88% → 100% on the witness, 97% and 91% on two local models, 5 porous cases out of 32, 0 after tightening, 0 divergent cases on re-run — are measured results from those runs, not estimates.*
