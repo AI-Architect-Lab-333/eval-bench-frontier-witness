@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Quality + throughput bench for OpenAI-compatible endpoints (llama.cpp).
+"""Quality bench for OpenAI-compatible endpoints (llama.cpp).
 
 Standard library only -- no pip install, runs on Windows and on the Spark.
 
-Two things are measured on every case:
-  * quality  -- deterministic checks declared with the case (no judge model,
-                so the verdict is reproducible and cannot drift)
-  * speed    -- time to first token, decode rate, token counts
+Quality is what this bench publishes: deterministic checks declared with the
+case (no judge model, so the verdict is reproducible and cannot drift).
+Time to first token is recorded and printed. Decode-rate (`tokens_per_s`) is
+still written into the JSON for old-file compatibility, but it is not a
+measurement -- see the README.
 
 Usage
   python bench.py run  --url http://100.x.y.z:8000/v1 \
@@ -573,9 +574,8 @@ def cmd_run(args):
         })
 
         mark = "PASS" if passed else ("part" if n_ok else "FAIL")
-        print("%-4s %s/%s  %5.1f tok/s  ttft %s" % (
+        print("%-4s %s/%s  ttft %s" % (
             mark, n_ok, len(checks),
-            result["tokens_per_s"] or 0.0,
             ("%.2fs" % result["ttft_s"]) if result["ttft_s"] else "n/a"))
 
     # The report is written even when everything failed: a run with no artifact
@@ -697,21 +697,20 @@ def summarize(records):
 def print_summary(summary, tag):
     print("\n%s" % ("=" * 74))
     print("%s" % tag)
-    print("%-18s %4s %7s %9s %11s %9s" %
-          ("category", "n", "passed", "pass rate", "mean score", "tok/s"))
+    print("%-18s %4s %7s %9s %11s" %
+          ("category", "n", "passed", "pass rate", "mean score"))
     print("-" * 74)
     for cat, slot in summary.items():
         if cat == "ALL":
             continue
-        print("%-18s %4d %7d %9.0f%% %11s %9s" % (
+        print("%-18s %4d %7d %9.0f%% %11s" % (
             cat, slot["n"], slot["passed"], slot["pass_rate"] * 100,
-            slot["mean_score"] if slot["mean_score"] is not None else "-",
-            slot["median_tokens_per_s"] if slot["median_tokens_per_s"] else "-"))
+            slot["mean_score"] if slot["mean_score"] is not None else "-"))
     print("-" * 74)
     all_slot = summary["ALL"]
-    print("%-18s %4d %7d %9.0f%% %11s %9s" % (
+    print("%-18s %4d %7d %9.0f%% %11s" % (
         "ALL", all_slot["n"], all_slot["passed"], all_slot["pass_rate"] * 100,
-        all_slot["mean_score"], all_slot["median_tokens_per_s"]))
+        all_slot["mean_score"]))
 
     # Silence is reported separately because it is not a wrong answer and must
     # not be read as one. On this bench it was the only thing that separated
@@ -823,10 +822,6 @@ def cmd_compare(args):
             cells.append(("%.0f%%" % (slot["pass_rate"] * 100)) if slot else "-")
         print("%-18s%s" % (cat, "".join(c.rjust(width) for c in cells)))
 
-    print("\n%-18s%s" % ("median tok/s", "".join(
-        str(rep["summary"]["ALL"]["median_tokens_per_s"]).rjust(width)
-        for rep, _ in reports)))
-
     indexes = [{c["id"]: c for c in rep["cases"]} for rep, _ in reports]
     all_ids = [c["id"] for c in reports[0][0]["cases"]]
     disagreed = []
@@ -901,13 +896,6 @@ def cmd_diff(args):
         delta = (sb["pass_rate"] - sa["pass_rate"]) * 100
         print("%-18s %13.0f%% %13.0f%% %+9.0f pt" % (
             cat, sa["pass_rate"] * 100, sb["pass_rate"] * 100, delta))
-
-    print("\n%-18s %14s %14s" % ("speed", "A", "B"))
-    print("-" * 60)
-    print("%-18s %13s  %13s" % (
-        "median tok/s",
-        report_a["summary"]["ALL"]["median_tokens_per_s"],
-        report_b["summary"]["ALL"]["median_tokens_per_s"]))
 
     index_a = {c["id"]: c for c in report_a["cases"]}
     index_b = {c["id"]: c for c in report_b["cases"]}

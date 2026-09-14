@@ -232,13 +232,7 @@ And the real discriminator surfaced by accident and deserves to be measured on p
 
 ### What happened when the cases were made harder
 
-That work was done, and the result is worth stating here rather than leaving this section on a call to action.
-
-Four hard cases were added, the lenient checks anchored, the witness revalidated to 36/36, and both local models re-measured. The separation improved — failures went from 0 / 1 / 3 to 0 / 3 / 5, and `long-horizon` opened into a 22-point gap between the two local models. The hard cases work.
-
-**And the bench is still saturated on correctness: 108 model-case pairs, zero wrong answers, eight refusals.** Four times harder changed the spread, not the kind of failure. On this material these models do not answer incorrectly; they stop.
-
-The method for detecting that state, writing cases that set a real trap, and measuring refusal as a first-class number is the companion guide: **[bench saturation and measuring refusal](https://github.com/AI-Architect-Lab-333/bench-saturation-refusal)**. It also carries six pitfalls of its own, including a case whose prompt contradicted its own expected answer — which the witness caught, and was right to.
+That work was done. Four hard cases, the witness revalidated, both local models re-measured: **still saturated on correctness.** The method for detecting that state, writing cases that set a real trap, and measuring refusal as a first-class number is the companion guide: **[bench saturation and measuring refusal](https://github.com/AI-Architect-Lab-333/bench-saturation-refusal)**. It also carries six pitfalls of its own, including a case whose prompt contradicted its own expected answer — which the witness caught, and was right to.
 
 ### Pitfall #11 — a truncated answer scored as a wrong answer
 
@@ -310,7 +304,7 @@ The fix splits in two, and the second half is the important one:
 - **Local models**: read the `timings` the inference server already returns instead of timing client-side. Same machine, same server, same context — that is the only rigorous speed comparison, and it is the one that decides between candidates.
 - **The witness**: do not claim to measure its speed at all. Tokens per second through a hosted API measure the provider's fleet, its queue and your internet link — not the model. The witness is a **correctness witness, not a throughput competitor**.
 
-Until that is done, the throughput column is not publishable.
+Until that is done, the number is not publishable. The field is still written into the JSON (old result files already carry it). Printed reports no longer show a tok/s column.
 
 ## 9. End-to-end verification
 
@@ -362,7 +356,7 @@ That last point is not bookkeeping. Corrections made *after seeing the measured 
 - **No measurement of prose.** Elegance, tone, concision are out of reach of deterministic checks, by design. This bench says whether a model is wrong, not whether it writes well.
 - **Resolution is about 3 points per case** on 32 pass/fail cases. It spots a per-category drop; it does not separate two close models on the overall score. A gap of one or two cases needs a repeat run before it means anything.
 - **Reproducibility holds for the local models, not for the witness.** The two local re-runs were byte-identical, but they queried a single loaded server instance and were never re-run across a model reload. The hosted witness is a different story entirely: 25 of 36 answers changed between two identical requests (section 6). Any conclusion that rests on a single witness pass is provisional.
-- **The throughput metric is wrong** (section 8) and its fix is not implemented. TTFT is sound.
+- **The throughput metric is wrong** (section 8) and its fix is not implemented. The field remains in the JSON; printed reports omit it. TTFT is sound.
 - **`started_utc` and the filename timestamp are written when the report is saved**, i.e. at the *end* of the run. A field named "started" holding the finish time — harmless for scores, misleading when correlating a run against a system log.
 - **One provider shape was used for the witness**: an OpenAI-compatible `/v1/chat/completions` endpoint. A native API with a different route needs a different client.
 - **Sending a witness pass to a hosted provider sends every prompt off the machine.** On an installation whose premise is that nothing leaves, that is a deliberate decision, not a detail: the cases carry hardware specifications, versions and operational notes. Say so out loud before running it.
