@@ -287,24 +287,20 @@ if ($alias -notmatch "model-a") {
 
 It refused to measure, and it was right: the port answered 200 while still serving the *previous* model. Without that guard the output file would have been named for model A and filled with model B's answers — **wrong data, perfectly plausible, and undetectable afterwards.** This is the single most valuable line in the chain.
 
-## 8. Known-bad: the throughput number
+## 8. Throughput: read the server, not the drain
 
-`tokens_per_s` is computed as `tokens ÷ (total_s − ttft_s)`. The intent was to strip prefill and measure decoding only. But when an answer arrives in a **burst** after a long wait, first and last chunk are hundredths of a second apart and the quotient explodes:
+`tokens_per_s` used to be computed as `tokens ÷ (total_s − ttft_s)`. The intent was to strip prefill and measure decoding only. When an answer arrives in a **burst** after a long wait, first and last chunk are hundredths of a second apart and the quotient explodes. That window is not decoding — it is a **network buffer draining**.
 
-```
-ds4-iq3xxs  crossover-case   197 tokens   window = 0.123 s   ->  1600 tok/s
-```
+Verified on the same two requests, DeepSeek-V4-Flash `UD-IQ3_XXS` already resident, llama.cpp `b10326`, September 2026:
 
-Physically impossible on this hardware. The window is not measuring decoding — it is measuring **a network buffer draining**. On the witness run, **24 of 32 cases** had a window under one second; the published median overstated DeepSeek's throughput by **68%** against the aggregate.
+| case | decode tokens | client window | client tok/s | `timings.predicted_per_second` | journal `eval time` |
+|---|---|---|---|---|---|
+| `ex-01-extract-figure` | 75 | 0.135 s | **555.4** | **16.7** | 75 tok / 4486 ms = **16.72 t/s** |
+| `ex-02-absent-on-purpose` | 177 | 3.525 s | 50.2 | **16.7** | 177 tok / 10581 ms = **16.73 t/s** |
 
-Untouched by this: the **quality verdict** (no check uses time) and **TTFT**, which is timed at the arrival of the first chunk with no division.
+The printed column is the server figure. The client figure is stored as `client_tokens_per_s` in the JSON and is not shown. A hosted witness does not send `timings`; its tok/s cell stays `-`. Tokens per second through a hosted API measure the provider's fleet, not the model.
 
-The fix splits in two, and the second half is the important one:
-
-- **Local models**: read the `timings` the inference server already returns instead of timing client-side. Same machine, same server, same context — that is the only rigorous speed comparison, and it is the one that decides between candidates.
-- **The witness**: do not claim to measure its speed at all. Tokens per second through a hosted API measure the provider's fleet, its queue and your internet link — not the model. The witness is a **correctness witness, not a throughput competitor**.
-
-Until that is done, the number is not publishable. The field is still written into the JSON (old result files already carry it). Printed reports no longer show a tok/s column.
+TTFT is unchanged: timed at the arrival of the first visible chunk, no division. Quality checks do not use time.
 
 ## 9. End-to-end verification
 
@@ -356,7 +352,7 @@ That last point is not bookkeeping. Corrections made *after seeing the measured 
 - **No measurement of prose.** Elegance, tone, concision are out of reach of deterministic checks, by design. This bench says whether a model is wrong, not whether it writes well.
 - **Resolution is about 3 points per case** on 32 pass/fail cases. It spots a per-category drop; it does not separate two close models on the overall score. A gap of one or two cases needs a repeat run before it means anything.
 - **Reproducibility holds for the local models, not for the witness.** The two local re-runs were byte-identical, but they queried a single loaded server instance and were never re-run across a model reload. The hosted witness is a different story entirely: 25 of 36 answers changed between two identical requests (section 6). Any conclusion that rests on a single witness pass is provisional.
-- **The throughput metric is wrong** (section 8) and its fix is not implemented. The field remains in the JSON; printed reports omit it. TTFT is sound.
+- **Decode rate is only published from llama.cpp `timings`.** A hosted witness has no such field; its tok/s cell is `-`. TTFT is timed client-side and is sound. The two-case smoke (16.7 tok/s, matching the journal) is not a 32-case median.
 - **`started_utc` and the filename timestamp are written when the report is saved**, i.e. at the *end* of the run. A field named "started" holding the finish time — harmless for scores, misleading when correlating a run against a system log.
 - **One provider shape was used for the witness**: an OpenAI-compatible `/v1/chat/completions` endpoint. A native API with a different route needs a different client.
 - **Sending a witness pass to a hosted provider sends every prompt off the machine.** On an installation whose premise is that nothing leaves, that is a deliberate decision, not a detail: the cases carry hardware specifications, versions and operational notes. Say so out loud before running it.

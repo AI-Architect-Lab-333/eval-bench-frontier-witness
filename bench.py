@@ -5,9 +5,11 @@ Standard library only -- no pip install, runs on Windows and on the Spark.
 
 Quality is what this bench publishes: deterministic checks declared with the
 case (no judge model, so the verdict is reproducible and cannot drift).
-Time to first token is recorded and printed. Decode-rate (`tokens_per_s`) is
-still written into the JSON for old-file compatibility, but it is not a
-measurement -- see the README.
+Time to first token is timed at the first visible chunk. Decode-rate
+(`tokens_per_s`) is taken from llama.cpp `timings.predicted_per_second` when
+the server sends it; otherwise it is omitted. The old client-side window
+(`tokens / (total_s - ttft_s)`) is stored as `client_tokens_per_s` and is
+not a measurement -- it explodes when the answer arrives in one burst.
 
 Usage
   python bench.py run  --url http://100.x.y.z:8000/v1 \
@@ -97,6 +99,7 @@ def _attempt(url, payload, timeout, api_key):
     deltas = 0
     usage = {}
     finish = None
+    timings = None
 
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -113,6 +116,8 @@ def _attempt(url, payload, timeout, api_key):
                     continue
                 if event.get("usage"):
                     usage = event["usage"]
+                if event.get("timings"):
+                    timings = event["timings"]
                 for choice in event.get("choices") or []:
                     # Why the model stopped matters as much as what it said. A
                     # "length" stop is a truncated answer, not a wrong one, and
@@ -135,6 +140,11 @@ def _attempt(url, payload, timeout, api_key):
     text = "".join(chunks)
     out_tokens = usage.get("completion_tokens") or deltas
     decode_window = max(elapsed - (ttft or 0.0), 1e-9)
+    client_tps = round(out_tokens / decode_window, 1) if out_tokens else None
+    server_tps = None
+    if timings and timings.get("predicted_per_second") is not None:
+        server_tps = round(float(timings["predicted_per_second"]), 1)
+    budget = payload.get("max_tokens")
 
     return {
         "text": text,
@@ -142,14 +152,15 @@ def _attempt(url, payload, timeout, api_key):
         "total_s": round(elapsed, 3),
         "prompt_tokens": usage.get("prompt_tokens"),
         "output_tokens": out_tokens,
-        "tokens_per_s": round(out_tokens / decode_window, 1) if out_tokens else None,
+        "tokens_per_s": server_tps,
+        "client_tokens_per_s": client_tps,
         "token_source": "usage" if usage.get("completion_tokens") else "delta-count",
         "finish_reason": finish,
         # Some providers omit finish_reason on a stream. Hitting the budget
         # exactly is the fallback signal, and it is right far more often than
         # a model that happens to stop on the last allowed token.
         "truncated": finish == "length" or (
-            finish is None and out_tokens and out_tokens >= max_tokens),
+            finish is None and out_tokens and budget and out_tokens >= budget),
     }
 
 
@@ -564,6 +575,7 @@ def cmd_run(args):
             "total_s": result["total_s"],
             "output_tokens": result["output_tokens"],
             "tokens_per_s": result["tokens_per_s"],
+            "client_tokens_per_s": result.get("client_tokens_per_s"),
             "retried_with_bigger_budget": retried,
             "tokens_wasted_before_retry": wasted if retried else 0,
             # Still truncated after the bigger budget: the score below counts
@@ -574,9 +586,12 @@ def cmd_run(args):
         })
 
         mark = "PASS" if passed else ("part" if n_ok else "FAIL")
-        print("%-4s %s/%s  ttft %s" % (
+        tps = ("  %.1f tok/s" % result["tokens_per_s"]
+               if result.get("tokens_per_s") is not None else "")
+        print("%-4s %s/%s  ttft %s%s" % (
             mark, n_ok, len(checks),
-            ("%.2fs" % result["ttft_s"]) if result["ttft_s"] else "n/a"))
+            ("%.2fs" % result["ttft_s"]) if result["ttft_s"] else "n/a",
+            tps))
 
     # The report is written even when everything failed: a run with no artifact
     # leaves nothing to examine afterwards, which is exactly when you need it.
@@ -697,20 +712,22 @@ def summarize(records):
 def print_summary(summary, tag):
     print("\n%s" % ("=" * 74))
     print("%s" % tag)
-    print("%-18s %4s %7s %9s %11s" %
-          ("category", "n", "passed", "pass rate", "mean score"))
+    print("%-18s %4s %7s %9s %11s %9s" %
+          ("category", "n", "passed", "pass rate", "mean score", "tok/s"))
     print("-" * 74)
     for cat, slot in summary.items():
         if cat == "ALL":
             continue
-        print("%-18s %4d %7d %9.0f%% %11s" % (
+        print("%-18s %4d %7d %9.0f%% %11s %9s" % (
             cat, slot["n"], slot["passed"], slot["pass_rate"] * 100,
-            slot["mean_score"] if slot["mean_score"] is not None else "-"))
+            slot["mean_score"] if slot["mean_score"] is not None else "-",
+            slot["median_tokens_per_s"] if slot["median_tokens_per_s"] else "-"))
     print("-" * 74)
     all_slot = summary["ALL"]
-    print("%-18s %4d %7d %9.0f%% %11s" % (
+    print("%-18s %4d %7d %9.0f%% %11s %9s" % (
         "ALL", all_slot["n"], all_slot["passed"], all_slot["pass_rate"] * 100,
-        all_slot["mean_score"]))
+        all_slot["mean_score"],
+        all_slot["median_tokens_per_s"] if all_slot["median_tokens_per_s"] else "-"))
 
     # Silence is reported separately because it is not a wrong answer and must
     # not be read as one. On this bench it was the only thing that separated
@@ -822,6 +839,11 @@ def cmd_compare(args):
             cells.append(("%.0f%%" % (slot["pass_rate"] * 100)) if slot else "-")
         print("%-18s%s" % (cat, "".join(c.rjust(width) for c in cells)))
 
+    print("\n%-18s%s" % ("median tok/s", "".join(
+        (str(rep["summary"]["ALL"]["median_tokens_per_s"])
+         if rep["summary"]["ALL"].get("median_tokens_per_s") is not None else "-").rjust(width)
+        for rep, _ in reports)))
+
     indexes = [{c["id"]: c for c in rep["cases"]} for rep, _ in reports]
     all_ids = [c["id"] for c in reports[0][0]["cases"]]
     disagreed = []
@@ -896,6 +918,13 @@ def cmd_diff(args):
         delta = (sb["pass_rate"] - sa["pass_rate"]) * 100
         print("%-18s %13.0f%% %13.0f%% %+9.0f pt" % (
             cat, sa["pass_rate"] * 100, sb["pass_rate"] * 100, delta))
+
+    print("\n%-18s %14s %14s" % ("speed", "A", "B"))
+    print("-" * 60)
+    print("%-18s %13s  %13s" % (
+        "median tok/s",
+        report_a["summary"]["ALL"].get("median_tokens_per_s") or "-",
+        report_b["summary"]["ALL"].get("median_tokens_per_s") or "-"))
 
     index_a = {c["id"]: c for c in report_a["cases"]}
     index_b = {c["id"]: c for c in report_b["cases"]}
